@@ -603,11 +603,19 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
                 llm_matches.append(False)
     else:
         llm_matches = [False for _ in texts]
-    matched = [
-        (text, score)
-        for (text, score), llm_match in zip(scored, llm_matches)
-        if score >= args.threshold or llm_match
-    ]
+    match_entries = []
+    for index, ((text, score), (item, _)) in enumerate(zip(scored, pairs)):
+        llm_match = llm_matches[index] if index < len(llm_matches) else False
+        if score >= args.threshold or llm_match:
+            match_entries.append(
+                {
+                    "text": text,
+                    "score": score,
+                    "url": extract_first(item, ["url"]) or "",
+                    "llm_match": llm_match,
+                }
+            )
+    matched = [(entry["text"], entry["score"]) for entry in match_entries]
 
     with _CACHE_LOCK:
         _LATEST_CACHE["items"] = [
@@ -727,14 +735,14 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
             elif now - last_sms >= 60:
                 should_send = True
             if should_send:
-                top_match = max(
-                    zip(scored, pairs),
-                    key=lambda entry: entry[0][1],
-                )
-                (top_text, top_score), (top_item, _) = top_match
-                top_url = extract_first(top_item, ["url"]) or ""
+                top_match = max(match_entries, key=lambda entry: entry["score"])
+                top_text = top_match["text"]
+                top_score = top_match["score"]
+                top_url = top_match["url"]
+                match_note = "LLM" if top_match["llm_match"] and top_score < args.threshold else "Embedding"
                 body = (
                     "RED ALERT 🚨: Robotaxi match detected.\n"
+                    f"Source: {match_note}\n"
                     f"Score: {top_score:.3f}\n"
                     f"Tweet: {top_text}\n"
                     f"Link: {top_url}"
