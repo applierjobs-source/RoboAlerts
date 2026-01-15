@@ -308,7 +308,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="RoboTaxi Twitter alert evaluator.")
     parser.add_argument("--query", default=DEFAULT_QUERY, help="Search keyword.")
     parser.add_argument(
-        "--max-items", type=int, default=50, help="Max items for Apify actor."
+        "--max-items", type=int, default=100, help="Max items per fetch."
     )
     parser.add_argument(
         "--threshold",

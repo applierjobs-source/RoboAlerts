@@ -1,6 +1,6 @@
 {
   "url": "https://twitter.com/search?q=RoboTaxi&f=live",
-  "maxItems": 50,
+  "maxItems": 100,
   "includeReplies": false,
   "includeRetweets": false
 }
