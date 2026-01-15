@@ -104,6 +104,7 @@ def fetch_x_tweets(
     since_id: Optional[str],
     include_replies: bool,
     include_retweets: bool,
+    start_time: Optional[str],
 ) -> List[Dict[str, Any]]:
     url = "https://api.x.com/2/tweets/search/recent"
     headers = {"Authorization": f"Bearer {bearer_token}"}
@@ -129,6 +130,8 @@ def fetch_x_tweets(
         }
         if since_id:
             params["since_id"] = since_id
+        if start_time:
+            params["start_time"] = start_time
         if next_token:
             params["next_token"] = next_token
         response = requests.get(url, headers=headers, params=params, timeout=60)
@@ -261,17 +264,24 @@ def score_texts(
 
 def load_state(path: str) -> Dict[str, Any]:
     if not os.path.exists(path):
-        return {"seen_ids": [], "last_seen_id": None}
+        return {"seen_ids": [], "last_seen_id": None, "last_fetch_time": None}
     data = load_json(path)
     if not isinstance(data, dict):
-        return {"seen_ids": [], "last_seen_id": None}
+        return {"seen_ids": [], "last_seen_id": None, "last_fetch_time": None}
     seen_ids = data.get("seen_ids", [])
     if not isinstance(seen_ids, list):
         seen_ids = []
     last_seen_id = data.get("last_seen_id")
     if not isinstance(last_seen_id, str):
         last_seen_id = None
-    return {"seen_ids": seen_ids, "last_seen_id": last_seen_id}
+    last_fetch_time = data.get("last_fetch_time")
+    if not isinstance(last_fetch_time, (int, float)):
+        last_fetch_time = None
+    return {
+        "seen_ids": seen_ids,
+        "last_seen_id": last_seen_id,
+        "last_fetch_time": last_fetch_time,
+    }
 
 
 def filter_new_items(
@@ -367,14 +377,34 @@ def load_actor_input(args: argparse.Namespace) -> Dict[str, Any]:
 
 def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[str]) -> int:
     x_bearer = os.getenv("X_BEARER_TOKEN")
-    include_replies = os.getenv("X_INCLUDE_REPLIES", "").lower() in ("1", "true", "yes")
-    include_retweets = os.getenv("X_INCLUDE_RETWEETS", "").lower() in ("1", "true", "yes")
+    include_replies_env = os.getenv("X_INCLUDE_REPLIES")
+    include_retweets_env = os.getenv("X_INCLUDE_RETWEETS")
+    include_replies = (
+        include_replies_env.lower() in ("1", "true", "yes")
+        if include_replies_env is not None
+        else True
+    )
+    include_retweets = (
+        include_retweets_env.lower() in ("1", "true", "yes")
+        if include_retweets_env is not None
+        else True
+    )
+    backfill_minutes_env = os.getenv("X_BACKFILL_MINUTES", "10")
+    try:
+        backfill_minutes = max(0, int(backfill_minutes_env))
+    except ValueError:
+        backfill_minutes = 10
     source = "x-api" if x_bearer else "apify"
 
     try:
         if source == "x-api":
             query = args.x_query or args.query
             state = load_state(args.state_file)
+            start_time = None
+            if backfill_minutes:
+                start_time = datetime.utcfromtimestamp(
+                    time.time() - backfill_minutes * 60
+                ).isoformat(timespec="seconds") + "Z"
             items = fetch_x_tweets(
                 x_bearer,
                 query,
@@ -382,6 +412,7 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
                 state.get("last_seen_id"),
                 include_replies,
                 include_retweets,
+                start_time,
             )
         else:
             actor_input = load_actor_input(args)
@@ -409,6 +440,7 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
         latest_id = max_tweet_id(items)
         if latest_id:
             state["last_seen_id"] = latest_id
+        state["last_fetch_time"] = time.time()
 
     if not new_items:
         print("No new tweets found.")
