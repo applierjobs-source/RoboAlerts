@@ -1,0 +1,60 @@
+# RoboTaxi Twitter Alert
+
+This program runs an Apify Twitter/X scraper with the keyword "RoboTaxi" and
+uses the OpenAI embeddings API to check if each tweet is similar to phrases
+about driverless robotaxi rides.
+
+## Setup
+
+1. Create and export your API keys:
+
+```shell
+export APIFY_TOKEN="your_apify_token"
+export OPENAI_API_KEY="your_openai_key"
+```
+
+2. Install dependencies:
+
+```shell
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+3. (Optional) Customize the actor input JSON:
+
+```shell
+cp actor_input.example.json actor_input.json
+```
+
+Edit `actor_input.json` to match the actor's exact input schema if needed.
+
+## Run
+
+Default run:
+
+```shell
+python alert.py
+```
+
+With custom input:
+
+```shell
+python alert.py --actor-input actor_input.json
+```
+
+Dry run (no OpenAI call):
+
+```shell
+python alert.py --dry-run
+```
+
+## Notes
+
+- The Apify actor is `ow5loPc1VwudoP5vY`.
+- Alerts are triggered when cosine similarity exceeds the threshold (default
+  `0.78`).
+- A `state.json` file is created to avoid re-processing tweets.
+
+Reference: https://console.apify.com/actors/ow5loPc1VwudoP5vY/input
+
