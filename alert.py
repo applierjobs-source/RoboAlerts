@@ -16,6 +16,7 @@ import requests
 
 ACTOR_ID = "ow5loPc1VwudoP5vY"
 DEFAULT_QUERY = "RoboTaxi"
+TESLA_KEYWORD = "Tesla"
 DEFAULT_PHRASES = [
     "robotaxi with no driver",
     "took a driverless robotaxi",
@@ -78,6 +79,7 @@ def save_json(path: str, payload: Any) -> None:
 
 
 def build_actor_input(query: str, max_items: int) -> Dict[str, Any]:
+    query = augment_query(query)
     search_url = os.getenv("APIFY_SEARCH_URL")
     if not search_url:
         encoded = quote_plus(query)
@@ -197,6 +199,13 @@ def parse_timestamp(value: Optional[str]) -> Optional[datetime]:
         return datetime.fromisoformat(text)
     except ValueError:
         return None
+
+
+def augment_query(query: str) -> str:
+    lowered = query.lower()
+    if "tesla" in lowered:
+        return query
+    return f"({query}) OR {TESLA_KEYWORD}"
 
 
 def append_archive(path: str, entries: List[Dict[str, Any]]) -> None:
@@ -493,7 +502,7 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
 
     try:
         if source == "x-api":
-            query = args.x_query or args.query
+            query = augment_query(args.x_query or args.query)
             state = load_state(args.state_file)
             start_time = None
             if backfill_minutes:
