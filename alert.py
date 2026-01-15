@@ -24,6 +24,9 @@ DEFAULT_PHRASES = [
     "AV ride with no operator",
     "autonomous ride no safety",
     "unsupervised",
+    "no safety monitor",
+    "no safety driver",
+    "no safety operator",
 ]
 
 TEXT_FIELDS = [
