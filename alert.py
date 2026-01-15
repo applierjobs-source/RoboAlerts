@@ -249,6 +249,49 @@ def fetch_embeddings(api_key: str, texts: List[str]) -> List[List[float]]:
     return embeddings
 
 
+def classify_match_openai(api_key: str, text: str, phrases: List[str]) -> bool:
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    phrases_block = "\n".join(f"- {phrase}" for phrase in phrases)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You classify whether a tweet indicates a robotaxi ride without a human "
+                "driver/safety operator. If the meaning is similar to the phrases, answer "
+                "only with MATCH or NO MATCH."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "Reference phrases:\n"
+                f"{phrases_block}\n\n"
+                "Tweet:\n"
+                f"{text}\n\n"
+                "Answer:"
+            ),
+        },
+    ]
+    payload = {"model": "gpt-4o-mini", "messages": messages, "temperature": 0}
+    response = requests.post(url, headers=headers, json=payload, timeout=45)
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"OpenAI classify failed ({response.status_code}): {response.text.strip()}"
+        )
+    data = response.json()
+    content = (
+        data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+    )
+    return content.upper().startswith("MATCH")
+
+
+def parse_bool_env(value: Optional[str], default: bool) -> bool:
+    if value is None:
+        return default
+    return value.lower() in ("1", "true", "yes", "y", "on")
+
+
 def send_email(
     api_key: str,
     sender: str,
@@ -407,22 +450,15 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
     x_bearer = os.getenv("X_BEARER_TOKEN")
     include_replies_env = os.getenv("X_INCLUDE_REPLIES")
     include_retweets_env = os.getenv("X_INCLUDE_RETWEETS")
-    include_replies = (
-        include_replies_env.lower() in ("1", "true", "yes")
-        if include_replies_env is not None
-        else True
-    )
-    include_retweets = (
-        include_retweets_env.lower() in ("1", "true", "yes")
-        if include_retweets_env is not None
-        else True
-    )
+    include_replies = parse_bool_env(include_replies_env, True)
+    include_retweets = parse_bool_env(include_retweets_env, True)
     backfill_minutes_env = os.getenv("X_BACKFILL_MINUTES", "10")
     try:
         backfill_minutes = max(0, int(backfill_minutes_env))
     except ValueError:
         backfill_minutes = 10
     source = "x-api" if x_bearer else "apify"
+    llm_enabled = parse_bool_env(os.getenv("OPENAI_LLM_ENABLED"), True)
     sendgrid_key = os.getenv("SENDGRID_API_KEY")
     email_from = os.getenv("EMAIL_FROM")
     email_to = os.getenv("EMAIL_TO", "")
@@ -544,18 +580,32 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
         return 0
 
     scored = score_texts(openai_key, texts, DEFAULT_PHRASES)
-    matched = [(text, score) for text, score in scored if score >= args.threshold]
+    llm_matches: List[bool] = []
+    if llm_enabled:
+        for text in texts:
+            try:
+                llm_matches.append(classify_match_openai(openai_key, text, DEFAULT_PHRASES))
+            except RuntimeError as exc:
+                print(f"OpenAI classify error: {exc}", file=sys.stderr)
+                llm_matches.append(False)
+    else:
+        llm_matches = [False for _ in texts]
+    matched = [
+        (text, score)
+        for (text, score), llm_match in zip(scored, llm_matches)
+        if score >= args.threshold or llm_match
+    ]
 
     with _CACHE_LOCK:
         _LATEST_CACHE["items"] = [
             {
                 "text": text,
                 "score": score,
-                "match": score >= args.threshold,
+                "match": score >= args.threshold or llm_match,
                 "url": extract_first(item, ["url"]),
                 "timestamp": extract_timestamp(item),
             }
-            for (text, score), (item, _) in zip(scored, pairs)
+            for (text, score), llm_match, (item, _) in zip(scored, llm_matches, pairs)
         ]
         _LATEST_CACHE["updated_at"] = time.time()
         _LATEST_CACHE["last_no_new"] = None
@@ -595,8 +645,9 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
 
     if sendgrid_key and email_from and email_recipients:
         rows = []
-        for (text, score), (item, _) in zip(scored, pairs):
-            verdict = "Match" if score >= args.threshold else "No match"
+        for index, ((text, score), (item, _)) in enumerate(zip(scored, pairs)):
+            llm_match = llm_matches[index] if index < len(llm_matches) else False
+            verdict = "Match" if score >= args.threshold or llm_match else "No match"
             url = extract_first(item, ["url"])
             timestamp = extract_timestamp(item) or ""
             safe_text = html_lib.escape(text)
