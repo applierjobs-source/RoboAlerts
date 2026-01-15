@@ -7,7 +7,7 @@ import sys
 import time
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import quote_plus, urlparse, parse_qs
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -497,9 +497,9 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
             state = load_state(args.state_file)
             start_time = None
             if backfill_minutes:
-                start_time = datetime.utcfromtimestamp(
-                    time.time() - backfill_minutes * 60
-                ).isoformat(timespec="seconds") + "Z"
+                start_time = datetime.fromtimestamp(
+                    time.time() - backfill_minutes * 60, timezone.utc
+                ).isoformat(timespec="seconds").replace("+00:00", "Z")
             items = fetch_x_tweets(
                 x_bearer,
                 query,
