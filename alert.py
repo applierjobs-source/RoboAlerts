@@ -8,7 +8,7 @@ import time
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse, parse_qs
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
@@ -52,6 +52,7 @@ TIME_FIELDS = [
 
 _CACHE_LOCK = threading.Lock()
 _LATEST_CACHE: Dict[str, Any] = {"items": [], "updated_at": None, "last_error": None}
+ARCHIVE_FILE = "archive.jsonl"
 
 
 def load_json(path: str) -> Any:
@@ -150,6 +151,34 @@ def parse_timestamp(value: Optional[str]) -> Optional[datetime]:
         return datetime.fromisoformat(text)
     except ValueError:
         return None
+
+
+def append_archive(path: str, entries: List[Dict[str, Any]]) -> None:
+    if not entries:
+        return
+    with _CACHE_LOCK:
+        with open(path, "a", encoding="utf-8") as handle:
+            for entry in entries:
+                handle.write(json.dumps(entry, ensure_ascii=True) + "\n")
+
+
+def load_archive(path: str) -> List[Dict[str, Any]]:
+    if not os.path.exists(path):
+        return []
+    entries: List[Dict[str, Any]] = []
+    with _CACHE_LOCK:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(entry, dict):
+                    entries.append(entry)
+    return entries
 
 
 def cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
@@ -315,6 +344,9 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
 
     if not new_items:
         print("No new tweets found.")
+        with _CACHE_LOCK:
+            _LATEST_CACHE["updated_at"] = time.time()
+        return 0
 
     pairs: List[Tuple[Dict[str, Any], str]] = []
     for item in items:
@@ -345,6 +377,23 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
                 for item, text in pairs
             ]
             _LATEST_CACHE["updated_at"] = time.time()
+        archive_entries = []
+        saved_at = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+        for item, text in pairs:
+            entry_id = extract_id(item) or text
+            archive_entries.append(
+                {
+                    "id": entry_id,
+                    "text": text,
+                    "url": extract_first(item, ["url"]),
+                    "timestamp": extract_timestamp(item),
+                    "score": None,
+                    "match": None,
+                    "source": source,
+                    "saved_at": saved_at,
+                }
+            )
+        append_archive(ARCHIVE_FILE, archive_entries)
         return 0
 
     scored = score_texts(openai_key, texts, DEFAULT_PHRASES)
@@ -373,28 +422,68 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
     if new_ids:
         state["seen_ids"].extend(new_ids)
         save_json(args.state_file, state)
+        entry_map: Dict[str, Dict[str, Any]] = {}
+        saved_at = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+        for (text, score), (item, _) in zip(scored, pairs):
+            entry_id = extract_id(item) or text
+            entry_map[entry_id] = {
+                "id": entry_id,
+                "text": text,
+                "url": extract_first(item, ["url"]),
+                "timestamp": extract_timestamp(item),
+                "score": score,
+                "match": score >= args.threshold,
+                "source": source,
+                "saved_at": saved_at,
+            }
+        archive_entries = []
+        for item in new_items:
+            entry_id = extract_id(item) or extract_text(item) or ""
+            entry = entry_map.get(entry_id)
+            if entry:
+                archive_entries.append(entry)
+        append_archive(ARCHIVE_FILE, archive_entries)
 
     return 0
 
 
 class StatusHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        if self.path == "/health":
+        parsed = urlparse(self.path)
+        if parsed.path == "/health":
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
             self.wfile.write(b"ok\n")
             return
 
-        if self.path != "/":
+        if parsed.path != "/":
             self.send_response(404)
             self.end_headers()
             return
 
         with _CACHE_LOCK:
-            items = list(_LATEST_CACHE.get("items", []))
             updated_at = _LATEST_CACHE.get("updated_at")
             last_error = _LATEST_CACHE.get("last_error")
+
+        query = parse_qs(parsed.query)
+        page = int(query.get("page", ["1"])[0] or 1)
+        page_size = int(query.get("page_size", ["50"])[0] or 50)
+        page = max(1, page)
+        page_size = max(1, min(200, page_size))
+
+        entries = load_archive(ARCHIVE_FILE)
+        entries = sorted(
+            entries,
+            key=lambda entry: parse_timestamp(entry.get("timestamp"))
+            or parse_timestamp(entry.get("saved_at"))
+            or datetime.min,
+            reverse=True,
+        )
+        total = len(entries)
+        start = (page - 1) * page_size
+        end = start + page_size
+        items = entries[start:end]
 
         timestamp = "never"
         if isinstance(updated_at, (int, float)):
@@ -407,6 +496,8 @@ class StatusHandler(BaseHTTPRequestHandler):
             match = entry.get("match")
             url = entry.get("url")
             timestamp = html_lib.escape(entry.get("timestamp") or "")
+            if not timestamp:
+                timestamp = html_lib.escape(entry.get("saved_at") or "")
             if url:
                 safe_url = html_lib.escape(url, quote=True)
                 text = f"<a href='{safe_url}' target='_blank' rel='noopener noreferrer'>{text}</a>"
@@ -419,6 +510,20 @@ class StatusHandler(BaseHTTPRequestHandler):
                 f"<tr><td class='tweet'>{text}</td><td class='timestamp'>{timestamp}</td><td class='result'>{verdict} {score_label}</td></tr>"
             )
         rows_html = "\n".join(rows) if rows else "<tr><td colspan='3'>No data yet.</td></tr>"
+
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        prev_page = page - 1
+        next_page = page + 1
+        nav_links = []
+        if prev_page >= 1:
+            nav_links.append(
+                f"<a href='/?page={prev_page}&page_size={page_size}'>Previous</a>"
+            )
+        if next_page <= total_pages:
+            nav_links.append(
+                f"<a href='/?page={next_page}&page_size={page_size}'>Next</a>"
+            )
+        nav_html = " | ".join(nav_links) if nav_links else ""
 
         error_html = ""
         if last_error:
@@ -446,6 +551,8 @@ class StatusHandler(BaseHTTPRequestHandler):
     <h1>RoboTaxi Alerts</h1>
     <div class="meta">Last updated: {timestamp}</div>
     {error_html}
+    <div class="meta">Showing {start + 1 if total else 0}-{min(end, total)} of {total} total</div>
+    <div class="meta">{nav_html}</div>
     <table>
       <thead>
         <tr>
