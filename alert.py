@@ -51,7 +51,12 @@ TIME_FIELDS = [
 ]
 
 _CACHE_LOCK = threading.Lock()
-_LATEST_CACHE: Dict[str, Any] = {"items": [], "updated_at": None, "last_error": None}
+_LATEST_CACHE: Dict[str, Any] = {
+    "items": [],
+    "updated_at": None,
+    "last_error": None,
+    "last_no_new": None,
+}
 ARCHIVE_FILE = "archive.jsonl"
 
 
@@ -346,6 +351,7 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
         print("No new tweets found.")
         with _CACHE_LOCK:
             _LATEST_CACHE["updated_at"] = time.time()
+            _LATEST_CACHE["last_no_new"] = time.time()
         return 0
 
     pairs: List[Tuple[Dict[str, Any], str]] = []
@@ -411,6 +417,7 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
             for (text, score), (item, _) in zip(scored, pairs)
         ]
         _LATEST_CACHE["updated_at"] = time.time()
+        _LATEST_CACHE["last_no_new"] = None
 
     if matched:
         print("Alerts:")
@@ -465,6 +472,7 @@ class StatusHandler(BaseHTTPRequestHandler):
         with _CACHE_LOCK:
             updated_at = _LATEST_CACHE.get("updated_at")
             last_error = _LATEST_CACHE.get("last_error")
+            last_no_new = _LATEST_CACHE.get("last_no_new")
 
         query = parse_qs(parsed.query)
         page = int(query.get("page", ["1"])[0] or 1)
@@ -488,6 +496,11 @@ class StatusHandler(BaseHTTPRequestHandler):
         timestamp = "never"
         if isinstance(updated_at, (int, float)):
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(updated_at))
+        no_new_timestamp = None
+        if isinstance(last_no_new, (int, float)):
+            no_new_timestamp = time.strftime(
+                "%Y-%m-%d %H:%M:%S UTC", time.gmtime(last_no_new)
+            )
 
         rows = []
         for entry in items:
@@ -528,6 +541,9 @@ class StatusHandler(BaseHTTPRequestHandler):
         error_html = ""
         if last_error:
             error_html = f"<div class='error'>Last error: {last_error}</div>"
+        no_new_html = ""
+        if no_new_timestamp:
+            no_new_html = f"<div class='meta'>No new tweets found at {no_new_timestamp}</div>"
 
         html = f"""<!doctype html>
 <html>
@@ -551,6 +567,7 @@ class StatusHandler(BaseHTTPRequestHandler):
     <h1>RoboTaxi Alerts</h1>
     <div class="meta">Last updated: {timestamp}</div>
     {error_html}
+    {no_new_html}
     <div class="meta">Showing {start + 1 if total else 0}-{min(end, total)} of {total} total</div>
     <div class="meta">{nav_html}</div>
     <table>
