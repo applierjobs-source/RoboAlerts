@@ -130,7 +130,7 @@ def fetch_x_tweets(
         }
         if since_id:
             params["since_id"] = since_id
-        if start_time:
+        elif start_time:
             params["start_time"] = start_time
         if next_token:
             params["next_token"] = next_token
