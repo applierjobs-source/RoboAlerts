@@ -4,6 +4,8 @@ import math
 import os
 import sys
 import time
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import quote_plus
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -249,6 +251,28 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
     return 0
 
 
+class StatusHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path not in ("/", "/health"):
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"RoboAlerts is running.\n")
+
+    def log_message(self, format: str, *args: Any) -> None:
+        return
+
+
+def start_status_server(port: int) -> HTTPServer:
+    server = HTTPServer(("", port), StatusHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
 def main() -> int:
     args = parse_args()
     apify_token = os.getenv("APIFY_TOKEN")
@@ -260,6 +284,15 @@ def main() -> int:
     if not openai_key and not args.dry_run:
         print("Missing OPENAI_API_KEY environment variable.", file=sys.stderr)
         return 2
+
+    port_value = os.getenv("PORT")
+    if port_value:
+        try:
+            port = int(port_value)
+        except ValueError:
+            print(f"Invalid PORT value: {port_value}", file=sys.stderr)
+            return 2
+        start_status_server(port)
 
     if args.once:
         return run_once(args, apify_token, openai_key)

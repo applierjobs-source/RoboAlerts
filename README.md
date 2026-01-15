@@ -68,6 +68,10 @@ Custom interval:
 python alert.py --interval 300
 ```
 
+Web status endpoint (Railway):
+
+- When `PORT` is set, the app serves `http://<host>/` and `/health`.
+
 ## Notes
 
 - The Apify actor is `ow5loPc1VwudoP5vY`.
