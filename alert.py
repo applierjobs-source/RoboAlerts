@@ -1,5 +1,6 @@
 import argparse
 import json
+import html as html_lib
 import math
 import os
 import sys
@@ -79,6 +80,31 @@ def run_apify_actor(token: str, actor_input: Dict[str, Any]) -> List[Dict[str, A
     if not isinstance(data, list):
         raise RuntimeError("Apify response was not a list of dataset items.")
     return data
+
+
+def fetch_x_tweets(
+    bearer_token: str, query: str, max_results: int
+) -> List[Dict[str, Any]]:
+    url = "https://api.x.com/2/tweets/search/recent"
+    headers = {"Authorization": f"Bearer {bearer_token}"}
+    params = {
+        "query": f"{query} -is:retweet -is:reply",
+        "max_results": max(10, min(100, max_results)),
+        "tweet.fields": "created_at,author_id",
+    }
+    response = requests.get(url, headers=headers, params=params, timeout=60)
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"X API request failed ({response.status_code}): {response.text.strip()}"
+        )
+    payload = response.json()
+    tweets = payload.get("data", [])
+    if not isinstance(tweets, list):
+        return []
+    for tweet in tweets:
+        if isinstance(tweet, dict) and tweet.get("id"):
+            tweet["url"] = f"https://x.com/i/web/status/{tweet['id']}"
+    return tweets
 
 
 def extract_first(item: Dict[str, Any], fields: Iterable[str]) -> Optional[str]:
@@ -189,6 +215,11 @@ def parse_args() -> argparse.Namespace:
         help="Path to custom actor input JSON.",
     )
     parser.add_argument(
+        "--x-query",
+        default=None,
+        help="Override X API search query (defaults to --query).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Skip OpenAI scoring, just list tweet texts.",
@@ -223,18 +254,23 @@ def load_actor_input(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[str]) -> int:
+    x_bearer = os.getenv("X_BEARER_TOKEN")
+    source = "x-api" if x_bearer else "apify"
+
     try:
-        actor_input = load_actor_input(args)
-    except ValueError as exc:
-        print(f"Apify input error: {exc}", file=sys.stderr)
+        if source == "x-api":
+            query = args.x_query or args.query
+            items = fetch_x_tweets(x_bearer, query, args.max_items)
+        else:
+            actor_input = load_actor_input(args)
+            items = run_apify_actor(apify_token, actor_input)
+    except RuntimeError as exc:
+        print(f"{'X API' if source == 'x-api' else 'Apify'} error: {exc}", file=sys.stderr)
         with _CACHE_LOCK:
             _LATEST_CACHE["last_error"] = str(exc)
         return 1
-
-    try:
-        items = run_apify_actor(apify_token, actor_input)
-    except RuntimeError as exc:
-        print(f"Apify error: {exc}", file=sys.stderr)
+    except ValueError as exc:
+        print(f"Apify input error: {exc}", file=sys.stderr)
         with _CACHE_LOCK:
             _LATEST_CACHE["last_error"] = str(exc)
         return 1
@@ -245,29 +281,33 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
 
     if not new_items:
         print("No new tweets found.")
-        # Still update the cache with the latest fetched items for the UI.
-        display_texts = [extract_text(item) for item in items]
-        display_texts = [text for text in display_texts if text]
-        with _CACHE_LOCK:
-            _LATEST_CACHE["items"] = [
-                {"text": text, "score": None, "match": None} for text in display_texts
-            ]
-            _LATEST_CACHE["updated_at"] = time.time()
-        return 0
 
-    texts = [extract_text(item) for item in items]
-    texts = [text for text in texts if text]
+    pairs: List[Tuple[Dict[str, Any], str]] = []
+    for item in items:
+        text = extract_text(item)
+        if text:
+            pairs.append((item, text))
+    texts = [text for _, text in pairs]
     if not texts:
-        print("No tweet text found in Apify results.")
+        print("No tweet text found in results.")
+        with _CACHE_LOCK:
+            _LATEST_CACHE["items"] = []
+            _LATEST_CACHE["updated_at"] = time.time()
         return 0
 
     if args.dry_run:
         print("Dry run: listing tweet texts.")
-        for text in texts:
+        for _, text in pairs:
             print(f"- {text}")
         with _CACHE_LOCK:
             _LATEST_CACHE["items"] = [
-                {"text": text, "score": None, "match": None} for text in texts
+                {
+                    "text": text,
+                    "score": None,
+                    "match": None,
+                    "url": extract_first(item, ["url"]),
+                }
+                for item, text in pairs
             ]
             _LATEST_CACHE["updated_at"] = time.time()
         return 0
@@ -277,8 +317,13 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
 
     with _CACHE_LOCK:
         _LATEST_CACHE["items"] = [
-            {"text": text, "score": score, "match": score >= args.threshold}
-            for text, score in scored
+            {
+                "text": text,
+                "score": score,
+                "match": score >= args.threshold,
+                "url": extract_first(item, ["url"]),
+            }
+            for (text, score), (item, _) in zip(scored, pairs)
         ]
         _LATEST_CACHE["updated_at"] = time.time()
 
@@ -321,9 +366,13 @@ class StatusHandler(BaseHTTPRequestHandler):
 
         rows = []
         for entry in items:
-            text = entry.get("text", "")
+            text = html_lib.escape(entry.get("text", ""))
             score = entry.get("score")
             match = entry.get("match")
+            url = entry.get("url")
+            if url:
+                safe_url = html_lib.escape(url, quote=True)
+                text = f"<a href='{safe_url}' target='_blank' rel='noopener noreferrer'>{text}</a>"
             if score is None:
                 verdict = "Pending"
             else:
@@ -393,9 +442,10 @@ def main() -> int:
     args = parse_args()
     apify_token = os.getenv("APIFY_TOKEN")
     openai_key = os.getenv("OPENAI_API_KEY")
+    x_bearer = os.getenv("X_BEARER_TOKEN")
 
-    if not apify_token:
-        print("Missing APIFY_TOKEN environment variable.", file=sys.stderr)
+    if not apify_token and not x_bearer:
+        print("Missing APIFY_TOKEN or X_BEARER_TOKEN environment variable.", file=sys.stderr)
         return 2
     if not openai_key and not args.dry_run:
         print("Missing OPENAI_API_KEY environment variable.", file=sys.stderr)
