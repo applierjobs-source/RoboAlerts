@@ -734,7 +734,7 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
                 (top_text, top_score), (top_item, _) = top_match
                 top_url = extract_first(top_item, ["url"]) or ""
                 body = (
-                    "RED ALERT: Robotaxi match detected.\n"
+                    "RED ALERT 🚨: Robotaxi match detected.\n"
                     f"Score: {top_score:.3f}\n"
                     f"Tweet: {top_text}\n"
                     f"Link: {top_url}"
