@@ -98,30 +98,59 @@ def run_apify_actor(token: str, actor_input: Dict[str, Any]) -> List[Dict[str, A
 
 
 def fetch_x_tweets(
-    bearer_token: str, query: str, max_results: int, since_id: Optional[str]
+    bearer_token: str,
+    query: str,
+    max_results: int,
+    since_id: Optional[str],
+    include_replies: bool,
+    include_retweets: bool,
 ) -> List[Dict[str, Any]]:
     url = "https://api.x.com/2/tweets/search/recent"
     headers = {"Authorization": f"Bearer {bearer_token}"}
-    params: Dict[str, Any] = {
-        "query": f"{query} -is:retweet -is:reply",
-        "max_results": max(10, min(100, max_results)),
-        "tweet.fields": "created_at,author_id",
-    }
-    if since_id:
-        params["since_id"] = since_id
-    response = requests.get(url, headers=headers, params=params, timeout=60)
-    if response.status_code >= 400:
-        raise RuntimeError(
-            f"X API request failed ({response.status_code}): {response.text.strip()}"
-        )
-    payload = response.json()
-    tweets = payload.get("data", [])
-    if not isinstance(tweets, list):
-        return []
-    for tweet in tweets:
-        if isinstance(tweet, dict) and tweet.get("id"):
+    query_parts = [query]
+    if not include_retweets:
+        query_parts.append("-is:retweet")
+    if not include_replies:
+        query_parts.append("-is:reply")
+    base_query = " ".join(query_parts).strip()
+
+    per_page = max(10, min(100, max_results))
+    next_token: Optional[str] = None
+    collected: List[Dict[str, Any]] = []
+    pages = 0
+    max_pages = max(1, (max_results + per_page - 1) // per_page)
+    max_pages = min(5, max_pages)
+
+    while pages < max_pages and len(collected) < max_results:
+        params: Dict[str, Any] = {
+            "query": base_query,
+            "max_results": per_page,
+            "tweet.fields": "created_at,author_id",
+        }
+        if since_id:
+            params["since_id"] = since_id
+        if next_token:
+            params["next_token"] = next_token
+        response = requests.get(url, headers=headers, params=params, timeout=60)
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"X API request failed ({response.status_code}): {response.text.strip()}"
+            )
+        payload = response.json()
+        tweets = payload.get("data", [])
+        if not isinstance(tweets, list):
+            break
+        collected.extend(tweet for tweet in tweets if isinstance(tweet, dict))
+        meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
+        next_token = meta.get("next_token")
+        if not next_token:
+            break
+        pages += 1
+
+    for tweet in collected:
+        if tweet.get("id"):
             tweet["url"] = f"https://x.com/i/web/status/{tweet['id']}"
-    return tweets
+    return collected[:max_results]
 
 
 def extract_first(item: Dict[str, Any], fields: Iterable[str]) -> Optional[str]:
@@ -338,6 +367,8 @@ def load_actor_input(args: argparse.Namespace) -> Dict[str, Any]:
 
 def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[str]) -> int:
     x_bearer = os.getenv("X_BEARER_TOKEN")
+    include_replies = os.getenv("X_INCLUDE_REPLIES", "").lower() in ("1", "true", "yes")
+    include_retweets = os.getenv("X_INCLUDE_RETWEETS", "").lower() in ("1", "true", "yes")
     source = "x-api" if x_bearer else "apify"
 
     try:
@@ -345,7 +376,12 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
             query = args.x_query or args.query
             state = load_state(args.state_file)
             items = fetch_x_tweets(
-                x_bearer, query, args.max_items, state.get("last_seen_id")
+                x_bearer,
+                query,
+                args.max_items,
+                state.get("last_seen_id"),
+                include_replies,
+                include_retweets,
             )
         else:
             actor_input = load_actor_input(args)
