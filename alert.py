@@ -27,6 +27,7 @@ DEFAULT_PHRASES = [
     "no safety monitor",
     "no safety driver",
     "no safety operator",
+    "no employee in robotaxi",
 ]
 
 TEXT_FIELDS = [
@@ -258,8 +259,8 @@ def classify_match_openai(api_key: str, text: str, phrases: List[str]) -> bool:
             "role": "system",
             "content": (
                 "You classify whether a tweet indicates a robotaxi ride without a human "
-                "driver/safety operator. If the meaning is similar to the phrases, answer "
-                "only with MATCH or NO MATCH."
+                "driver/safety operator. Any tweet that is similar in meaning to these "
+                "phrases should be labeled MATCH. Answer only with MATCH or NO MATCH."
             ),
         },
         {
