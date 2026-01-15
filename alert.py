@@ -245,6 +245,30 @@ def fetch_embeddings(api_key: str, texts: List[str]) -> List[List[float]]:
     return embeddings
 
 
+def send_email(
+    api_key: str,
+    sender: str,
+    recipients: List[str],
+    subject: str,
+    html_content: str,
+) -> None:
+    if not recipients:
+        return
+    url = "https://api.sendgrid.com/v3/mail/send"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "personalizations": [{"to": [{"email": addr} for addr in recipients]}],
+        "from": {"email": sender},
+        "subject": subject,
+        "content": [{"type": "text/html", "value": html_content}],
+    }
+    response = requests.post(url, headers=headers, json=payload, timeout=30)
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"SendGrid request failed ({response.status_code}): {response.text.strip()}"
+        )
+
+
 def score_texts(
     api_key: str,
     tweets: List[str],
@@ -395,6 +419,10 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
     except ValueError:
         backfill_minutes = 10
     source = "x-api" if x_bearer else "apify"
+    sendgrid_key = os.getenv("SENDGRID_API_KEY")
+    email_from = os.getenv("EMAIL_FROM")
+    email_to = os.getenv("EMAIL_TO", "")
+    email_recipients = [addr.strip() for addr in email_to.split(",") if addr.strip()]
 
     try:
         if source == "x-api":
@@ -448,6 +476,19 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
             _LATEST_CACHE["updated_at"] = time.time()
             _LATEST_CACHE["last_no_new"] = time.time()
         save_json(args.state_file, state)
+        if sendgrid_key and email_from and email_recipients:
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+            body = f"<p>No new RoboTaxi tweets found at {timestamp}.</p>"
+            try:
+                send_email(
+                    sendgrid_key,
+                    email_from,
+                    email_recipients,
+                    "RoboAlerts: No new tweets",
+                    body,
+                )
+            except RuntimeError as exc:
+                print(f"SendGrid error: {exc}", file=sys.stderr)
         return 0
 
     pairs: List[Tuple[Dict[str, Any], str]] = []
@@ -546,6 +587,42 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
             if entry:
                 archive_entries.append(entry)
         append_archive(ARCHIVE_FILE, archive_entries)
+
+    if sendgrid_key and email_from and email_recipients:
+        rows = []
+        for (text, score), (item, _) in zip(scored, pairs):
+            verdict = "Match" if score >= args.threshold else "No match"
+            url = extract_first(item, ["url"])
+            timestamp = extract_timestamp(item) or ""
+            safe_text = html_lib.escape(text)
+            safe_ts = html_lib.escape(timestamp)
+            if url:
+                safe_url = html_lib.escape(url, quote=True)
+                safe_text = f"<a href='{safe_url}' target='_blank' rel='noopener noreferrer'>{safe_text}</a>"
+            rows.append(
+                f"<tr><td>{safe_text}</td><td>{safe_ts}</td><td>{verdict}</td><td>{score:.3f}</td></tr>"
+            )
+        rows_html = "\n".join(rows) if rows else "<tr><td colspan='4'>No results.</td></tr>"
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+        body = f"""<p>RoboAlerts results at {timestamp}.</p>
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead>
+    <tr><th>Tweet</th><th>Timestamp</th><th>Result</th><th>Score</th></tr>
+  </thead>
+  <tbody>
+    {rows_html}
+  </tbody>
+</table>"""
+        try:
+            send_email(
+                sendgrid_key,
+                email_from,
+                email_recipients,
+                "RoboAlerts: Tweet results",
+                body,
+            )
+        except RuntimeError as exc:
+            print(f"SendGrid error: {exc}", file=sys.stderr)
 
     return 0
 

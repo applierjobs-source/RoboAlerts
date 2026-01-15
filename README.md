@@ -74,6 +74,16 @@ Custom interval:
 python alert.py --interval 300
 ```
 
+## Email alerts (SendGrid)
+
+Set these environment variables:
+
+```shell
+export SENDGRID_API_KEY="your_sendgrid_api_key"
+export EMAIL_FROM="verified-sender@yourdomain.com"
+export EMAIL_TO="zacharrow3@gmail.com,johndavidarrow@gmail.com"
+```
+
 Web status endpoint (Railway):
 
 - When `PORT` is set, the app serves `http://<host>/` and `/health`.
