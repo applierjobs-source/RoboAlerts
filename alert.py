@@ -727,7 +727,18 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
             elif now - last_sms >= 60:
                 should_send = True
             if should_send:
-                body = "RED ALERT: Robotaxi match detected."
+                top_match = max(
+                    zip(scored, pairs),
+                    key=lambda entry: entry[0][1],
+                )
+                (top_text, top_score), (top_item, _) = top_match
+                top_url = extract_first(top_item, ["url"]) or ""
+                body = (
+                    "RED ALERT: Robotaxi match detected.\n"
+                    f"Score: {top_score:.3f}\n"
+                    f"Tweet: {top_text}\n"
+                    f"Link: {top_url}"
+                )
                 try:
                     send_sms(twilio_sid, twilio_token, twilio_from, twilio_recipients, body)
                     with _CACHE_LOCK:
