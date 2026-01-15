@@ -84,6 +84,17 @@ export EMAIL_FROM="verified-sender@yourdomain.com"
 export EMAIL_TO="zacharrow3@gmail.com,johndavidarrow@gmail.com"
 ```
 
+## SMS alerts (Twilio)
+
+Set these environment variables:
+
+```shell
+export TWILIO_ACCOUNT_SID="your_twilio_account_sid"
+export TWILIO_AUTH_TOKEN="your_twilio_auth_token"
+export TWILIO_FROM_NUMBER="+15551234567"
+export TWILIO_TO_NUMBERS="+15126363628,+15126269167"
+```
+
 Web status endpoint (Railway):
 
 - When `PORT` is set, the app serves `http://<host>/` and `/health`.

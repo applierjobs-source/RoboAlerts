@@ -61,6 +61,8 @@ _LATEST_CACHE: Dict[str, Any] = {
     "last_error": None,
     "last_no_new": None,
     "last_match": None,
+    "match_alert_start": None,
+    "last_sms_sent": None,
 }
 ARCHIVE_FILE = "archive.jsonl"
 
@@ -317,6 +319,25 @@ def send_email(
         )
 
 
+def send_sms(
+    account_sid: str,
+    auth_token: str,
+    from_number: str,
+    to_numbers: List[str],
+    body: str,
+) -> None:
+    if not to_numbers:
+        return
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+    for number in to_numbers:
+        payload = {"From": from_number, "To": number, "Body": body}
+        response = requests.post(url, data=payload, auth=(account_sid, auth_token), timeout=30)
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Twilio request failed ({response.status_code}): {response.text.strip()}"
+            )
+
+
 def score_texts(
     api_key: str,
     tweets: List[str],
@@ -464,6 +485,11 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
     email_from = os.getenv("EMAIL_FROM")
     email_to = os.getenv("EMAIL_TO", "")
     email_recipients = [addr.strip() for addr in email_to.split(",") if addr.strip()]
+    twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
+    twilio_from = os.getenv("TWILIO_FROM_NUMBER")
+    twilio_to = os.getenv("TWILIO_TO_NUMBERS", "")
+    twilio_recipients = [num.strip() for num in twilio_to.split(",") if num.strip()]
 
     try:
         if source == "x-api":
@@ -611,6 +637,12 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
         _LATEST_CACHE["updated_at"] = time.time()
         _LATEST_CACHE["last_no_new"] = None
         _LATEST_CACHE["last_match"] = bool(matched)
+        if matched:
+            if _LATEST_CACHE["match_alert_start"] is None:
+                _LATEST_CACHE["match_alert_start"] = time.time()
+        else:
+            _LATEST_CACHE["match_alert_start"] = None
+            _LATEST_CACHE["last_sms_sent"] = None
 
     if matched:
         print("Alerts:")
@@ -680,6 +712,26 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
             )
         except RuntimeError as exc:
             print(f"SendGrid error: {exc}", file=sys.stderr)
+
+    if matched and twilio_sid and twilio_token and twilio_from and twilio_recipients:
+        now = time.time()
+        with _CACHE_LOCK:
+            start_time = _LATEST_CACHE.get("match_alert_start")
+            last_sms = _LATEST_CACHE.get("last_sms_sent")
+        if isinstance(start_time, (int, float)) and now - start_time <= 600:
+            should_send = False
+            if not isinstance(last_sms, (int, float)):
+                should_send = True
+            elif now - last_sms >= 60:
+                should_send = True
+            if should_send:
+                body = "RED ALERT: Robotaxi match detected."
+                try:
+                    send_sms(twilio_sid, twilio_token, twilio_from, twilio_recipients, body)
+                    with _CACHE_LOCK:
+                        _LATEST_CACHE["last_sms_sent"] = now
+                except RuntimeError as exc:
+                    print(f"Twilio error: {exc}", file=sys.stderr)
 
     return 0
 
