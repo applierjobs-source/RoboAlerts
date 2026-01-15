@@ -31,7 +31,7 @@ Edit `actor_input.json` to match the actor's exact input schema if needed.
 
 ## Run
 
-Default run:
+Default run (loops every 60 seconds):
 
 ```shell
 python alert.py
@@ -47,6 +47,18 @@ Dry run (no OpenAI call):
 
 ```shell
 python alert.py --dry-run
+```
+
+Run once and exit:
+
+```shell
+python alert.py --once
+```
+
+Custom interval:
+
+```shell
+python alert.py --interval 300
 ```
 
 ## Notes

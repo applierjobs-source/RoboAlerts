@@ -3,6 +3,7 @@ import json
 import math
 import os
 import sys
+import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
@@ -181,21 +182,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip OpenAI scoring, just list tweet texts.",
     )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=60,
+        help="Seconds between runs (default: 60).",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run a single check and exit.",
+    )
     return parser.parse_args()
 
 
-def main() -> int:
-    args = parse_args()
-    apify_token = os.getenv("APIFY_TOKEN")
-    openai_key = os.getenv("OPENAI_API_KEY")
-
-    if not apify_token:
-        print("Missing APIFY_TOKEN environment variable.", file=sys.stderr)
-        return 2
-    if not openai_key and not args.dry_run:
-        print("Missing OPENAI_API_KEY environment variable.", file=sys.stderr)
-        return 2
-
+def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[str]) -> int:
     if args.actor_input:
         actor_input = load_json(args.actor_input)
     else:
@@ -236,6 +237,26 @@ def main() -> int:
         save_json(args.state_file, state)
 
     return 0
+
+
+def main() -> int:
+    args = parse_args()
+    apify_token = os.getenv("APIFY_TOKEN")
+    openai_key = os.getenv("OPENAI_API_KEY")
+
+    if not apify_token:
+        print("Missing APIFY_TOKEN environment variable.", file=sys.stderr)
+        return 2
+    if not openai_key and not args.dry_run:
+        print("Missing OPENAI_API_KEY environment variable.", file=sys.stderr)
+        return 2
+
+    if args.once:
+        return run_once(args, apify_token, openai_key)
+
+    while True:
+        run_once(args, apify_token, openai_key)
+        time.sleep(max(1, args.interval))
 
 
 if __name__ == "__main__":
