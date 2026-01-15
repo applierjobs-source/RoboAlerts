@@ -98,15 +98,17 @@ def run_apify_actor(token: str, actor_input: Dict[str, Any]) -> List[Dict[str, A
 
 
 def fetch_x_tweets(
-    bearer_token: str, query: str, max_results: int
+    bearer_token: str, query: str, max_results: int, since_id: Optional[str]
 ) -> List[Dict[str, Any]]:
     url = "https://api.x.com/2/tweets/search/recent"
     headers = {"Authorization": f"Bearer {bearer_token}"}
-    params = {
+    params: Dict[str, Any] = {
         "query": f"{query} -is:retweet -is:reply",
         "max_results": max(10, min(100, max_results)),
         "tweet.fields": "created_at,author_id",
     }
+    if since_id:
+        params["since_id"] = since_id
     response = requests.get(url, headers=headers, params=params, timeout=60)
     if response.status_code >= 400:
         raise RuntimeError(
@@ -230,14 +232,17 @@ def score_texts(
 
 def load_state(path: str) -> Dict[str, Any]:
     if not os.path.exists(path):
-        return {"seen_ids": []}
+        return {"seen_ids": [], "last_seen_id": None}
     data = load_json(path)
     if not isinstance(data, dict):
-        return {"seen_ids": []}
+        return {"seen_ids": [], "last_seen_id": None}
     seen_ids = data.get("seen_ids", [])
     if not isinstance(seen_ids, list):
         seen_ids = []
-    return {"seen_ids": seen_ids}
+    last_seen_id = data.get("last_seen_id")
+    if not isinstance(last_seen_id, str):
+        last_seen_id = None
+    return {"seen_ids": seen_ids, "last_seen_id": last_seen_id}
 
 
 def filter_new_items(
@@ -253,6 +258,21 @@ def filter_new_items(
         if tweet_id:
             new_ids.append(tweet_id)
     return new_items, new_ids
+
+
+def max_tweet_id(items: List[Dict[str, Any]]) -> Optional[str]:
+    max_id: Optional[int] = None
+    for item in items:
+        raw_id = extract_id(item)
+        if not raw_id:
+            continue
+        try:
+            value = int(raw_id)
+        except ValueError:
+            continue
+        if max_id is None or value > max_id:
+            max_id = value
+    return str(max_id) if max_id is not None else None
 
 
 def parse_args() -> argparse.Namespace:
@@ -323,7 +343,10 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
     try:
         if source == "x-api":
             query = args.x_query or args.query
-            items = fetch_x_tweets(x_bearer, query, args.max_items)
+            state = load_state(args.state_file)
+            items = fetch_x_tweets(
+                x_bearer, query, args.max_items, state.get("last_seen_id")
+            )
         else:
             actor_input = load_actor_input(args)
             items = run_apify_actor(apify_token, actor_input)
@@ -346,12 +369,17 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
     )
     state = load_state(args.state_file)
     new_items, new_ids = filter_new_items(items, state["seen_ids"])
+    if source == "x-api":
+        latest_id = max_tweet_id(items)
+        if latest_id:
+            state["last_seen_id"] = latest_id
 
     if not new_items:
         print("No new tweets found.")
         with _CACHE_LOCK:
             _LATEST_CACHE["updated_at"] = time.time()
             _LATEST_CACHE["last_no_new"] = time.time()
+        save_json(args.state_file, state)
         return 0
 
     pairs: List[Tuple[Dict[str, Any], str]] = []
