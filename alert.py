@@ -207,11 +207,29 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[str]) -> int:
+def load_actor_input(args: argparse.Namespace) -> Dict[str, Any]:
+    env_input = os.getenv("APIFY_INPUT_JSON")
+    if env_input:
+        try:
+            parsed = json.loads(env_input)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"APIFY_INPUT_JSON is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("APIFY_INPUT_JSON must be a JSON object.")
+        return parsed
     if args.actor_input:
-        actor_input = load_json(args.actor_input)
-    else:
-        actor_input = build_actor_input(args.query, args.max_items)
+        return load_json(args.actor_input)
+    return build_actor_input(args.query, args.max_items)
+
+
+def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[str]) -> int:
+    try:
+        actor_input = load_actor_input(args)
+    except ValueError as exc:
+        print(f"Apify input error: {exc}", file=sys.stderr)
+        with _CACHE_LOCK:
+            _LATEST_CACHE["last_error"] = str(exc)
+        return 1
 
     try:
         items = run_apify_actor(apify_token, actor_input)

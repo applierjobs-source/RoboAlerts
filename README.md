@@ -44,6 +44,12 @@ Set a custom search URL (if required by the actor):
 export APIFY_SEARCH_URL="https://twitter.com/search?q=RoboTaxi&f=live"
 ```
 
+Override actor input JSON (use the exact schema from Apify Console):
+
+```shell
+export APIFY_INPUT_JSON='{"url":"https://twitter.com/search?q=RoboTaxi&f=live","maxItems":50,"includeReplies":false,"includeRetweets":false}'
+```
+
 With custom input:
 
 ```shell
