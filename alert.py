@@ -4,6 +4,7 @@ import math
 import os
 import sys
 import time
+from urllib.parse import quote_plus
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
@@ -49,7 +50,12 @@ def save_json(path: str, payload: Any) -> None:
 
 
 def build_actor_input(query: str, max_items: int) -> Dict[str, Any]:
+    search_url = os.getenv("APIFY_SEARCH_URL")
+    if not search_url:
+        encoded = quote_plus(query)
+        search_url = f"https://twitter.com/search?q={encoded}&f=live"
     return {
+        "url": search_url,
         "searchTerms": [query],
         "maxItems": max_items,
         "includeReplies": False,
@@ -202,7 +208,11 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
     else:
         actor_input = build_actor_input(args.query, args.max_items)
 
-    items = run_apify_actor(apify_token, actor_input)
+    try:
+        items = run_apify_actor(apify_token, actor_input)
+    except RuntimeError as exc:
+        print(f"Apify error: {exc}", file=sys.stderr)
+        return 1
     state = load_state(args.state_file)
     new_items, new_ids = filter_new_items(items, state["seen_ids"])
 

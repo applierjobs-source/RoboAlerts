@@ -28,6 +28,7 @@ cp actor_input.example.json actor_input.json
 ```
 
 Edit `actor_input.json` to match the actor's exact input schema if needed.
+If the actor requires a URL, set `url` (example included).
 
 ## Run
 
@@ -35,6 +36,12 @@ Default run (loops every 60 seconds):
 
 ```shell
 python alert.py
+```
+
+Set a custom search URL (if required by the actor):
+
+```shell
+export APIFY_SEARCH_URL="https://twitter.com/search?q=RoboTaxi&f=live"
 ```
 
 With custom input:
