@@ -56,6 +56,7 @@ _LATEST_CACHE: Dict[str, Any] = {
     "updated_at": None,
     "last_error": None,
     "last_no_new": None,
+    "last_match": None,
 }
 ARCHIVE_FILE = "archive.jsonl"
 
@@ -555,6 +556,7 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
         ]
         _LATEST_CACHE["updated_at"] = time.time()
         _LATEST_CACHE["last_no_new"] = None
+        _LATEST_CACHE["last_match"] = bool(matched)
 
     if matched:
         print("Alerts:")
@@ -646,6 +648,7 @@ class StatusHandler(BaseHTTPRequestHandler):
             updated_at = _LATEST_CACHE.get("updated_at")
             last_error = _LATEST_CACHE.get("last_error")
             last_no_new = _LATEST_CACHE.get("last_no_new")
+            last_match = _LATEST_CACHE.get("last_match")
 
         query = parse_qs(parsed.query)
         page = int(query.get("page", ["1"])[0] or 1)
@@ -737,7 +740,7 @@ class StatusHandler(BaseHTTPRequestHandler):
     </style>
   </head>
   <body>
-    <h1>RoboTaxi Alerts</h1>
+    <h1>{'RED ALERT 🚨: Match detected' if last_match else 'RoboTaxi Alerts'}</h1>
     <div class="meta">Last updated: {timestamp}</div>
     {error_html}
     {no_new_html}
