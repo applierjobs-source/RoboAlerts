@@ -537,26 +537,12 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
             state["last_seen_id"] = latest_id
         state["last_fetch_time"] = time.time()
 
-    if not new_items:
+    has_new = bool(new_items)
+    if not has_new:
         print("No new tweets found.")
         with _CACHE_LOCK:
             _LATEST_CACHE["updated_at"] = time.time()
             _LATEST_CACHE["last_no_new"] = time.time()
-        save_json(args.state_file, state)
-        if sendgrid_key and email_from and email_recipients:
-            timestamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
-            body = f"<p>No new RoboTaxi tweets found at {timestamp}.</p>"
-            try:
-                send_email(
-                    sendgrid_key,
-                    email_from,
-                    email_recipients,
-                    "RoboAlerts: No new tweets",
-                    body,
-                )
-            except RuntimeError as exc:
-                print(f"SendGrid error: {exc}", file=sys.stderr)
-        return 0
 
     pairs: List[Tuple[Dict[str, Any], str]] = []
     for item in items:
@@ -653,6 +639,7 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
 
     if new_ids:
         state["seen_ids"].extend(new_ids)
+    if source == "x-api" or new_ids:
         save_json(args.state_file, state)
         entry_map: Dict[str, Dict[str, Any]] = {}
         saved_at = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
@@ -668,13 +655,14 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
                 "source": source,
                 "saved_at": saved_at,
             }
-        archive_entries = []
-        for item in new_items:
-            entry_id = extract_id(item) or extract_text(item) or ""
-            entry = entry_map.get(entry_id)
-            if entry:
-                archive_entries.append(entry)
-        append_archive(ARCHIVE_FILE, archive_entries)
+        if new_ids:
+            archive_entries = []
+            for item in new_items:
+                entry_id = extract_id(item) or extract_text(item) or ""
+                entry = entry_map.get(entry_id)
+                if entry:
+                    archive_entries.append(entry)
+            append_archive(ARCHIVE_FILE, archive_entries)
 
     if sendgrid_key and email_from and email_recipients:
         rows = []
@@ -708,6 +696,20 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
                 email_from,
                 email_recipients,
                 "RoboAlerts: Tweet results",
+                body,
+            )
+        except RuntimeError as exc:
+            print(f"SendGrid error: {exc}", file=sys.stderr)
+
+    if not has_new and sendgrid_key and email_from and email_recipients:
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+        body = f"<p>No new RoboTaxi tweets found at {timestamp}.</p>"
+        try:
+            send_email(
+                sendgrid_key,
+                email_from,
+                email_recipients,
+                "RoboAlerts: No new tweets",
                 body,
             )
         except RuntimeError as exc:
