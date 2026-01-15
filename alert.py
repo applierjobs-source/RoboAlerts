@@ -7,6 +7,7 @@ import sys
 import time
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from datetime import datetime
 from urllib.parse import quote_plus
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -133,6 +134,22 @@ def extract_id(item: Dict[str, Any]) -> Optional[str]:
 
 def extract_timestamp(item: Dict[str, Any]) -> Optional[str]:
     return extract_first(item, TIME_FIELDS)
+
+
+def parse_timestamp(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
 
 
 def cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
@@ -288,6 +305,11 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
         return 1
     with _CACHE_LOCK:
         _LATEST_CACHE["last_error"] = None
+    items = sorted(
+        items,
+        key=lambda item: parse_timestamp(extract_timestamp(item)) or datetime.min,
+        reverse=True,
+    )
     state = load_state(args.state_file)
     new_items, new_ids = filter_new_items(items, state["seen_ids"])
 
