@@ -41,6 +41,13 @@ ID_FIELDS = [
     "status_id",
     "url",
 ]
+TIME_FIELDS = [
+    "created_at",
+    "createdAt",
+    "date_posted",
+    "datePosted",
+    "timestamp",
+]
 
 _CACHE_LOCK = threading.Lock()
 _LATEST_CACHE: Dict[str, Any] = {"items": [], "updated_at": None, "last_error": None}
@@ -122,6 +129,10 @@ def extract_text(item: Dict[str, Any]) -> Optional[str]:
 
 def extract_id(item: Dict[str, Any]) -> Optional[str]:
     return extract_first(item, ID_FIELDS)
+
+
+def extract_timestamp(item: Dict[str, Any]) -> Optional[str]:
+    return extract_first(item, TIME_FIELDS)
 
 
 def cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
@@ -307,6 +318,7 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
                     "score": None,
                     "match": None,
                     "url": extract_first(item, ["url"]),
+                    "timestamp": extract_timestamp(item),
                 }
                 for item, text in pairs
             ]
@@ -323,6 +335,7 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
                 "score": score,
                 "match": score >= args.threshold,
                 "url": extract_first(item, ["url"]),
+                "timestamp": extract_timestamp(item),
             }
             for (text, score), (item, _) in zip(scored, pairs)
         ]
@@ -371,6 +384,7 @@ class StatusHandler(BaseHTTPRequestHandler):
             score = entry.get("score")
             match = entry.get("match")
             url = entry.get("url")
+            timestamp = html_lib.escape(entry.get("timestamp") or "")
             if url:
                 safe_url = html_lib.escape(url, quote=True)
                 text = f"<a href='{safe_url}' target='_blank' rel='noopener noreferrer'>{text}</a>"
@@ -380,9 +394,9 @@ class StatusHandler(BaseHTTPRequestHandler):
                 verdict = "Match" if match else "No match"
             score_label = "" if score is None else f"{score:.3f}"
             rows.append(
-                f"<tr><td class='tweet'>{text}</td><td class='result'>{verdict} {score_label}</td></tr>"
+                f"<tr><td class='tweet'>{text}</td><td class='timestamp'>{timestamp}</td><td class='result'>{verdict} {score_label}</td></tr>"
             )
-        rows_html = "\n".join(rows) if rows else "<tr><td colspan='2'>No data yet.</td></tr>"
+        rows_html = "\n".join(rows) if rows else "<tr><td colspan='3'>No data yet.</td></tr>"
 
         error_html = ""
         if last_error:
@@ -401,8 +415,9 @@ class StatusHandler(BaseHTTPRequestHandler):
       table {{ width: 100%; border-collapse: collapse; }}
       th, td {{ border: 1px solid #ddd; padding: 10px; vertical-align: top; }}
       th {{ background: #f5f5f5; text-align: left; }}
-      .tweet {{ width: 70%; }}
-      .result {{ width: 30%; white-space: nowrap; }}
+      .tweet {{ width: 60%; }}
+      .timestamp {{ width: 20%; white-space: nowrap; color: #555; }}
+      .result {{ width: 20%; white-space: nowrap; }}
     </style>
   </head>
   <body>
@@ -413,6 +428,7 @@ class StatusHandler(BaseHTTPRequestHandler):
       <thead>
         <tr>
           <th>Latest RoboTaxi Tweets</th>
+          <th>Timestamp</th>
           <th>Match Result</th>
         </tr>
       </thead>
