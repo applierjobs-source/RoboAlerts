@@ -22,6 +22,7 @@ DEFAULT_PHRASES = [
     "robotaxi empty front seat",
     "AV ride with no operator",
     "autonomous ride no safety",
+    "unsupervised",
 ]
 
 TEXT_FIELDS = [
