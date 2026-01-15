@@ -40,6 +40,9 @@ ID_FIELDS = [
     "url",
 ]
 
+_CACHE_LOCK = threading.Lock()
+_LATEST_CACHE: Dict[str, Any] = {"items": [], "updated_at": None, "last_error": None}
+
 
 def load_json(path: str) -> Any:
     with open(path, "r", encoding="utf-8") as handle:
@@ -214,15 +217,27 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
         items = run_apify_actor(apify_token, actor_input)
     except RuntimeError as exc:
         print(f"Apify error: {exc}", file=sys.stderr)
+        with _CACHE_LOCK:
+            _LATEST_CACHE["last_error"] = str(exc)
         return 1
+    with _CACHE_LOCK:
+        _LATEST_CACHE["last_error"] = None
     state = load_state(args.state_file)
     new_items, new_ids = filter_new_items(items, state["seen_ids"])
 
     if not new_items:
         print("No new tweets found.")
+        # Still update the cache with the latest fetched items for the UI.
+        display_texts = [extract_text(item) for item in items]
+        display_texts = [text for text in display_texts if text]
+        with _CACHE_LOCK:
+            _LATEST_CACHE["items"] = [
+                {"text": text, "score": None, "match": None} for text in display_texts
+            ]
+            _LATEST_CACHE["updated_at"] = time.time()
         return 0
 
-    texts = [extract_text(item) for item in new_items]
+    texts = [extract_text(item) for item in items]
     texts = [text for text in texts if text]
     if not texts:
         print("No tweet text found in Apify results.")
@@ -232,10 +247,22 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
         print("Dry run: listing tweet texts.")
         for text in texts:
             print(f"- {text}")
+        with _CACHE_LOCK:
+            _LATEST_CACHE["items"] = [
+                {"text": text, "score": None, "match": None} for text in texts
+            ]
+            _LATEST_CACHE["updated_at"] = time.time()
         return 0
 
     scored = score_texts(openai_key, texts, DEFAULT_PHRASES)
     matched = [(text, score) for text, score in scored if score >= args.threshold]
+
+    with _CACHE_LOCK:
+        _LATEST_CACHE["items"] = [
+            {"text": text, "score": score, "match": score >= args.threshold}
+            for text, score in scored
+        ]
+        _LATEST_CACHE["updated_at"] = time.time()
 
     if matched:
         print("Alerts:")
@@ -253,14 +280,85 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
 
 class StatusHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        if self.path not in ("/", "/health"):
+        if self.path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"ok\n")
+            return
+
+        if self.path != "/":
             self.send_response(404)
             self.end_headers()
             return
+
+        with _CACHE_LOCK:
+            items = list(_LATEST_CACHE.get("items", []))
+            updated_at = _LATEST_CACHE.get("updated_at")
+            last_error = _LATEST_CACHE.get("last_error")
+
+        timestamp = "never"
+        if isinstance(updated_at, (int, float)):
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(updated_at))
+
+        rows = []
+        for entry in items:
+            text = entry.get("text", "")
+            score = entry.get("score")
+            match = entry.get("match")
+            if score is None:
+                verdict = "Pending"
+            else:
+                verdict = "Match" if match else "No match"
+            score_label = "" if score is None else f"{score:.3f}"
+            rows.append(
+                f"<tr><td class='tweet'>{text}</td><td class='result'>{verdict} {score_label}</td></tr>"
+            )
+        rows_html = "\n".join(rows) if rows else "<tr><td colspan='2'>No data yet.</td></tr>"
+
+        error_html = ""
+        if last_error:
+            error_html = f"<div class='error'>Last error: {last_error}</div>"
+
+        html = f"""<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>RoboAlerts</title>
+    <style>
+      body {{ font-family: Arial, sans-serif; margin: 24px; }}
+      h1 {{ margin-bottom: 8px; }}
+      .meta {{ color: #555; margin-bottom: 16px; }}
+      .error {{ color: #b00020; margin-bottom: 12px; }}
+      table {{ width: 100%; border-collapse: collapse; }}
+      th, td {{ border: 1px solid #ddd; padding: 10px; vertical-align: top; }}
+      th {{ background: #f5f5f5; text-align: left; }}
+      .tweet {{ width: 70%; }}
+      .result {{ width: 30%; white-space: nowrap; }}
+    </style>
+  </head>
+  <body>
+    <h1>RoboTaxi Alerts</h1>
+    <div class="meta">Last updated: {timestamp}</div>
+    {error_html}
+    <table>
+      <thead>
+        <tr>
+          <th>Latest RoboTaxi Tweets</th>
+          <th>Match Result</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows_html}
+      </tbody>
+    </table>
+  </body>
+</html>"""
+
         self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"RoboAlerts is running.\n")
+        self.wfile.write(html.encode("utf-8"))
 
     def log_message(self, format: str, *args: Any) -> None:
         return
