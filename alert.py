@@ -114,6 +114,7 @@ def fetch_x_tweets(
     include_replies: bool,
     include_retweets: bool,
     start_time: Optional[str],
+    debug: bool = False,
 ) -> List[Dict[str, Any]]:
     url = "https://api.x.com/2/tweets/search/recent"
     headers = {"Authorization": f"Bearer {bearer_token}"}
@@ -130,6 +131,14 @@ def fetch_x_tweets(
     pages = 0
     max_pages = max(1, (max_results + per_page - 1) // per_page)
     max_pages = min(5, max_pages)
+    if debug:
+        print(
+            "X debug: query="
+            f"{base_query!r} max_results={max_results} per_page={per_page} "
+            f"since_id={since_id!r} start_time={start_time!r} "
+            f"include_replies={include_replies} include_retweets={include_retweets}",
+            file=sys.stderr,
+        )
 
     while pages < max_pages and len(collected) < max_results:
         params: Dict[str, Any] = {
@@ -162,6 +171,11 @@ def fetch_x_tweets(
     for tweet in collected:
         if tweet.get("id"):
             tweet["url"] = f"https://x.com/i/web/status/{tweet['id']}"
+    if debug:
+        print(
+            f"X debug: fetched {len(collected)} tweets across {pages} page(s).",
+            file=sys.stderr,
+        )
     return collected[:max_results]
 
 
@@ -483,6 +497,13 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
     include_retweets_env = os.getenv("X_INCLUDE_RETWEETS")
     include_replies = parse_bool_env(include_replies_env, True)
     include_retweets = parse_bool_env(include_retweets_env, True)
+    x_debug = parse_bool_env(os.getenv("X_DEBUG"), False)
+    x_debug_needles_env = os.getenv("X_DEBUG_NEEDLES", "")
+    x_debug_needles = [
+        needle.strip()
+        for needle in x_debug_needles_env.split(",")
+        if needle.strip()
+    ]
     backfill_minutes_env = os.getenv("X_BACKFILL_MINUTES", "10")
     try:
         backfill_minutes = max(0, int(backfill_minutes_env))
@@ -517,6 +538,7 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
                 include_replies,
                 include_retweets,
                 start_time,
+                debug=x_debug,
             )
         else:
             actor_input = load_actor_input(args)
@@ -559,6 +581,26 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
         if text:
             pairs.append((item, text))
     texts = [text for _, text in pairs]
+    if x_debug:
+        print(
+            f"X debug: extracted {len(texts)} tweet texts from {len(items)} items.",
+            file=sys.stderr,
+        )
+        if x_debug_needles:
+            lowered_texts = [text.lower() for text in texts]
+            for needle in x_debug_needles:
+                needle_lower = needle.lower()
+                matches = [
+                    text
+                    for text, lowered in zip(texts, lowered_texts)
+                    if needle_lower in lowered
+                ]
+                print(
+                    f"X debug: needle {needle!r} found {len(matches)} match(es).",
+                    file=sys.stderr,
+                )
+                if matches:
+                    print(f"X debug: example: {matches[0]}", file=sys.stderr)
     if not texts:
         print("No tweet text found in results.")
         with _CACHE_LOCK:
