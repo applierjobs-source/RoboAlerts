@@ -655,17 +655,21 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
     else:
         llm_matches = [False for _ in texts]
     match_entries = []
+    match_entries_new = []
+    new_id_set = set(new_ids)
     for index, ((text, score), (item, _)) in enumerate(zip(scored, pairs)):
         llm_match = llm_matches[index] if index < len(llm_matches) else False
         if score >= args.threshold or llm_match:
-            match_entries.append(
-                {
-                    "text": text,
-                    "score": score,
-                    "url": extract_first(item, ["url"]) or "",
-                    "llm_match": llm_match,
-                }
-            )
+            entry = {
+                "text": text,
+                "score": score,
+                "url": extract_first(item, ["url"]) or "",
+                "llm_match": llm_match,
+            }
+            match_entries.append(entry)
+            item_id = extract_id(item)
+            if item_id and item_id in new_id_set:
+                match_entries_new.append(entry)
     matched = [(entry["text"], entry["score"]) for entry in match_entries]
 
     with _CACHE_LOCK:
@@ -774,36 +778,34 @@ def run_once(args: argparse.Namespace, apify_token: str, openai_key: Optional[st
         except RuntimeError as exc:
             print(f"SendGrid error: {exc}", file=sys.stderr)
 
-    if matched and twilio_sid and twilio_token and twilio_from and twilio_recipients:
+    if match_entries_new and twilio_sid and twilio_token and twilio_from and twilio_recipients:
         now = time.time()
         with _CACHE_LOCK:
-            start_time = _LATEST_CACHE.get("match_alert_start")
             last_sms = _LATEST_CACHE.get("last_sms_sent")
-        if isinstance(start_time, (int, float)) and now - start_time <= 600:
-            should_send = False
-            if not isinstance(last_sms, (int, float)):
-                should_send = True
-            elif now - last_sms >= 60:
-                should_send = True
-            if should_send:
-                top_match = max(match_entries, key=lambda entry: entry["score"])
-                top_text = top_match["text"]
-                top_score = top_match["score"]
-                top_url = top_match["url"]
-                match_note = "LLM" if top_match["llm_match"] and top_score < args.threshold else "Embedding"
-                body = (
-                    "RED ALERT 🚨: Robotaxi match detected.\n"
-                    f"Source: {match_note}\n"
-                    f"Score: {top_score:.3f}\n"
-                    f"Tweet: {top_text}\n"
-                    f"Link: {top_url}"
-                )
-                try:
-                    send_sms(twilio_sid, twilio_token, twilio_from, twilio_recipients, body)
-                    with _CACHE_LOCK:
-                        _LATEST_CACHE["last_sms_sent"] = now
-                except RuntimeError as exc:
-                    print(f"Twilio error: {exc}", file=sys.stderr)
+        should_send = False
+        if not isinstance(last_sms, (int, float)):
+            should_send = True
+        elif now - last_sms >= 60:
+            should_send = True
+        if should_send:
+            top_match = max(match_entries_new, key=lambda entry: entry["score"])
+            top_text = top_match["text"]
+            top_score = top_match["score"]
+            top_url = top_match["url"]
+            match_note = "LLM" if top_match["llm_match"] and top_score < args.threshold else "Embedding"
+            body = (
+                "RED ALERT 🚨: Robotaxi match detected.\n"
+                f"Source: {match_note}\n"
+                f"Score: {top_score:.3f}\n"
+                f"Tweet: {top_text}\n"
+                f"Link: {top_url}"
+            )
+            try:
+                send_sms(twilio_sid, twilio_token, twilio_from, twilio_recipients, body)
+                with _CACHE_LOCK:
+                    _LATEST_CACHE["last_sms_sent"] = now
+            except RuntimeError as exc:
+                print(f"Twilio error: {exc}", file=sys.stderr)
 
     return 0
 
