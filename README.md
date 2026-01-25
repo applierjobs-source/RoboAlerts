@@ -32,7 +32,7 @@ If the actor requires a URL, set `url` (example included).
 
 ## Run
 
-Default run (loops every 60 seconds):
+Default run (loops every 30 minutes):
 
 ```shell
 python alert.py

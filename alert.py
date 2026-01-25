@@ -465,8 +465,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--interval",
         type=int,
-        default=180,
-        help="Seconds between runs (default: 180).",
+        default=1800,
+        help="Seconds between runs (default: 1800).",
     )
     parser.add_argument(
         "--once",
